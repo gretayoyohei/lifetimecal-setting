@@ -113,6 +113,7 @@ LC.openModal=function(ds, hourOrAll, editId){
     '<div class="form-row form-row-textarea"><label>'+LC.t('location','Loc')+'</label><textarea id="evLoc" rows="2" placeholder="'+LC.t('location','Loc')+'" class="modal-textarea">'+safeLoc+'</textarea></div>'+
     '<div class="form-row form-row-textarea"><label>'+LC.t('notes','Notes')+'</label><textarea id="evDesc" rows="3" placeholder="'+LC.t('notes','Notes')+'" class="modal-textarea">'+safeDesc+'</textarea></div>'+
     '<div class="btn-row"><button class="hand-btn primary" id="btnSaveEv">'+LC.t('sv','Save')+'</button>'+(editId?'<button class="hand-btn danger-btn" id="btnDelEv" style="border-color:#c06060;color:#c06060">'+LC.t('dl','Del')+'</button>':'')+'<button class="hand-btn" id="btnCancelEv">'+LC.t('cn','Cancel')+'</button></div>';
+  
   document.getElementById('modalOverlay').classList.add('active');
   document.getElementById('mClose').onclick=LC.closeModal;
   document.getElementById('btnCancelEv').onclick=LC.closeModal;
@@ -131,10 +132,21 @@ LC.openModal=function(ds, hourOrAll, editId){
       }
     };
   }
-  document.getElementById('btnSaveEv').onclick = function(){
+  
+  // 修复保存按钮事件监听
+  var saveBtn = document.getElementById('btnSaveEv');
+  // 移除可能存在的旧监听，避免重复绑定
+  var newSaveBtn = saveBtn.cloneNode(true);
+  saveBtn.parentNode.replaceChild(newSaveBtn, saveBtn);
+  
+  newSaveBtn.onclick = function(){
     try {
       var title = document.getElementById('evTitle').value.trim();
-      if(!title){ document.getElementById('evTitle').style.borderColor='#e88'; return; }
+      if(!title){ 
+        document.getElementById('evTitle').style.borderColor='#e88'; 
+        alert(LC.t('fa','请填写标题'));
+        return; 
+      }
 
       var activeType = document.querySelector('.type-tag.active');
       var type = activeType ? activeType.dataset.type : 'p';
@@ -149,6 +161,7 @@ LC.openModal=function(ds, hourOrAll, editId){
       var desc = document.getElementById('evDesc').value;
 
       if(editEvent){
+        // 编辑已有事件
         editEvent.title = title;
         editEvent.type = type;
         editEvent.isAllDay = isAllDay;
@@ -161,31 +174,47 @@ LC.openModal=function(ds, hourOrAll, editId){
         editEvent.location = loc;
         editEvent.description = desc;
       } else {
+        // 新建事件，生成唯一ID
+        var newId = LC.genId();
         LC.ud.events.push({
-          id: Date.now().toString(),
-          title:title, type:type, isAllDay:isAllDay,
-          startDate:startDate, endDate:endDate,
-          startTime:startTime, endTime:endTime,
-          repeat:repeat, remindBefore:remindBefore,
-          location:loc, description:desc
+          id: newId,
+          title: title,
+          type: type,
+          isAllDay: isAllDay,
+          startDate: startDate,
+          endDate: endDate,
+          startTime: startTime,
+          endTime: endTime,
+          repeat: repeat,
+          remindBefore: remindBefore,
+          location: loc,
+          description: desc,
+          exceptions: []   // 初始化例外列表
         });
       }
 
-      localStorage.setItem('lc_userdata', JSON.stringify(LC.ud));
+      // 保存到localStorage
+      localStorage.setItem(LC.STORE, JSON.stringify(LC.ud));
+      // 标记索引为脏，下次渲染会重建
+      if(LC.markIndexDirty) LC.markIndexDirty();
+      
       LC.closeModal();
       
-      if(LC.openSidebar){
+      // 刷新侧边栏（如果侧边栏打开的是同一天）
+      if(LC.openSidebar && LC.currentSidebarDate === ds){
         var scrollPart = document.getElementById('sidebarScrollPart');
         var prevScroll = scrollPart ? scrollPart.scrollTop : 0;
         LC.openSidebar(ds);
         if(scrollPart){
           scrollPart.scrollTop = prevScroll;
         }
+      } else if(LC.render){
+        // 否则重新渲染日历
+        LC.render();
       }
-
     } catch(e) {
       console.error('保存失败：', e);
-      alert('保存成功！');
+      alert('保存失败：' + e.message);
       LC.closeModal();
     }
   };
