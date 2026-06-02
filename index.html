@@ -1,0 +1,146 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+<title>人生日历</title>
+<link href="https://fonts.googleapis.com/css2?family=Playpen+Sans:wght@300;400;600;700&display=swap" rel="stylesheet">
+<link href="https://fonts.googleapis.com/css2?family=Zen+Maru+Gothic:wght@300;400;500;700;900&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<select class="lang-sel" id="langSel"></select>
+<div class="input-page" id="inputPage">
+  <canvas id="bgCanvas"></canvas>
+  <div class="input-card">
+    <h1 id="cTitle"></h1>
+    <p id="cSub"></p>
+    <label id="lName"></label>
+    <input id="inName" placeholder="">
+    <label id="lBirth"></label>
+    <div class="life-row date-row">
+      <select id="inBirthY"></select>
+      <select id="inBirthM"></select>
+      <select id="inBirthD"></select>
+    </div>
+    <label id="lLife"></label>
+    <div class="life-row">
+      <input id="inLife" type="number" min="1" max="120" value="80">
+      <span id="unitY"></span>
+    </div>
+    <div class="age-hint" id="ageHint"></div>
+    <button class="btn-go" id="btnGo"></button>
+  </div>
+</div>
+<canvas id="calCanvas"></canvas>
+<div class="zoom-hint" id="zoomHint"></div>
+
+<div class="controls" id="controls">
+  <button class="ctrl-btn" id="btnReset"></button>
+  <button class="ctrl-btn" id="btnThisYear"></button>
+  <button class="ctrl-btn" id="btnThisMonth"></button>
+  <button class="ctrl-btn accent" id="btnToday"></button>
+</div>
+
+<div class="modal-overlay" id="modalOverlay">
+  <div class="modal-box" id="modalBox"></div>
+</div>
+<div class="confirm-overlay" id="confirmOverlay">
+  <div class="confirm-box">
+    <p id="confirmMsg"></p>
+    <div class="btn-row" style="justify-content:center">
+      <button class="hand-btn primary" id="confirmYes"></button>
+      <button class="hand-btn" id="confirmNo"></button>
+    </div>
+  </div>
+</div>
+
+<!-- 侧边栏：24小时视图 + 待办列表（可拖拽分割） -->
+<div class="sidebar-overlay" id="sidebarOverlay">
+  <button class="sidebar-drag-handle" id="sidebarDragHandle">
+    <span class="drag-arrows">
+      <svg width="32" height="56" viewBox="0 0 32 56" fill="none" xmlns="http://www.w3.org/2000/svg">
+        <polygon points="15,16 15,40 6,28" fill="#8b7d6b"/>
+        <polygon points="17,16 17,40 26,28" fill="#8b7d6b"/>
+      </svg>
+    </span>
+  </button>
+  <span class="sidebar-close" id="sidebarClose">✕</span>
+  <div class="sidebar-header" id="sidebarHeader"></div>
+  
+  <!-- 可调整大小的容器 -->
+  <div class="resizable-container" id="resizableContainer">
+    <!-- 上半部分：24小时视图 -->
+    <div class="timeline-container" id="timelineContainer">
+      <div class="sidebar-fixed-part" id="sidebarFixedPart"></div>
+      <div class="sidebar-scroll-part" id="sidebarScrollPart"></div>
+    </div>
+    
+    <!-- 拖拽分割条 -->
+    <div class="split-bar" id="splitBar">
+      <div class="split-handle"></div>
+    </div>
+    
+    <!-- 下半部分：待办列表 -->
+    <div class="todo-container" id="todoContainer">
+      <div class="todo-header">
+        <h4 id="todoTitle">📋</h4>
+      </div>
+      <div class="todo-list" id="todoList">
+        <!-- 动态生成待办项 -->
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- 优化后的日程信息弹窗结构：类型移到底部 -->
+<div id="infoPopover">
+  <div class="popover-header">
+    <div class="popover-title" id="infoPTitle"></div>
+    <div class="popover-actions" id="infoActions">
+      <span id="infoEditBtn" title="Edit">📝</span>
+      <span id="infoDelBtn" title="Delete" style="color:#c06060">🗑</span>
+      <span id="infoCloseBtn" title="Close">✕</span>
+    </div>
+  </div>
+  <div class="popover-time" id="infoPTime"></div>
+  <div class="popover-location" id="infoPLoc"></div>
+  <div class="popover-description" id="infoPDesc"></div>
+  <div class="popover-footer">
+    <div class="popover-type" id="infoPType"></div>
+  </div>
+</div>
+
+<div id="ctxMenu">
+  <div class="ctx-item" id="ctxEdit"></div>
+  <div class="ctx-item danger" id="ctxDel"></div>
+</div>
+
+<!-- 工具箱按钮 (左下角浮动) -->
+<div class="toolbox-container" id="toolboxContainer">
+  <button class="toolbox-btn" id="toolboxBtn">🛠️</button>
+  <div class="toolbox-menu" id="toolboxMenu">
+    <div class="toolbox-item" id="toolboxExport">
+      <span class="toolbox-icon">📤</span>
+      <span class="toolbox-label">导出日程</span>
+    </div>
+    <div class="toolbox-item" id="toolboxImport">
+      <span class="toolbox-icon">📥</span>
+      <span class="toolbox-label">导入日程</span>
+    </div>
+    <div class="toolbox-item toolbox-item-danger" id="toolboxLogout">
+      <span class="toolbox-icon">🚪</span>
+      <span class="toolbox-label">登出</span>
+    </div>
+  </div>
+</div>
+
+<script src="js/state.js"></script>
+<script src="js/lang.js"></script>
+<script src="js/render.js"></script>
+<script src="js/interaction.js"></script>
+<script src="js/sidebar.js"></script>
+<script src="js/modal.js"></script>
+<script src="js/app.js"></script>
+</body>
+</html>
