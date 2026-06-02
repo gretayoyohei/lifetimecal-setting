@@ -103,6 +103,7 @@ LC.drawMonth=function(year,m,sx,sy,sw,sh,mlA,ymA,dA){
   for(var day=1;day<=mi.days;day++){var dow=(mi.dow1+day-1)%7,wr=Math.floor((mi.dow1+day-1)/7);var dpp=LC.dayPos(dow,wr);var dsx=sx+dpp.x*LC.zoom,dsy=sy+dpp.y*LC.zoom;var dsw=LC.DW*LC.zoom,dsh=LC.DH*LC.zoom;if(dsw<1)continue;LC.drawDay(LC.fmtDate(year,m,day),day,dsx,dsy,dsw,dsh)}LC.ctx.restore()}
 };
 
+/* ========= 优化：使用高性能索引获取事件 ========= */
 LC.drawDay=function(ds,day,sx,sy,sw,sh){
   var isPast=ds<LC.TODAY,isToday=ds===LC.TODAY;
   var rad=Math.max(.5,Math.min(4,sw*.1));
@@ -127,7 +128,8 @@ LC.drawDay=function(ds,day,sx,sy,sw,sh){
     dateH = fs + 2;
   }
 
-  var evs = LC.getEv(ds).sort(function(a,b){ return (b.isAllDay?1:0)-(a.isAllDay?1:0) || (a.startTime||'').localeCompare(b.startTime||''); });
+  // 使用高性能索引获取事件（原 LC.getEv 已重定向）
+  var evs = LC.getEventsByDate(ds).sort(function(a,b){ return (b.isAllDay?1:0)-(a.isAllDay?1:0) || (a.startTime||'').localeCompare(b.startTime||''); });
 
   if(evs.length){
     if(sw<22){
