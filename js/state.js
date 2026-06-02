@@ -118,7 +118,6 @@ LC.clearTodoCompletedByEventId = function (eventId) {
 /* ========= 导出文件名生成（用户名 + 固定前缀 + 时间戳） ========= */
 LC.getExportFileName = function () {
   var userName = LC.ud && LC.ud.name ? LC.ud.name.trim() : 'unknown';
-  // 去除文件名非法字符 (Windows: \ / : * ? " < > |)
   userName = userName.replace(/[\\/:*?"<>|]/g, '_');
   var now = new Date();
   var Y = now.getFullYear();
@@ -329,9 +328,38 @@ LC.animBg = function () {
   LC.drawStaticBg();
 };
 
-/* ========= 提醒功能（增强版） ========= */
+/* ========= 提醒功能（增强版 + 提醒音） ========= */
 LC.remindIntervals = null;
 LC.notificationPermissionGranted = false;
+
+// 播放提醒音（使用 Web Audio 生成短促蜂鸣声）
+LC.playRemindSound = function () {
+  try {
+    // 使用 AudioContext 生成一个短促的“叮”声
+    var AudioCtx = window.AudioContext || window.webkitAudioContext;
+    if (!AudioCtx) {
+      console.warn('当前浏览器不支持 Web Audio，无法播放提醒音');
+      return;
+    }
+    var ctx = new AudioCtx();
+    var gain = ctx.createGain();
+    gain.connect(ctx.destination);
+    var osc = ctx.createOscillator();
+    osc.type = 'sine';
+    osc.frequency.value = 880; // 880 Hz (A5)
+    osc.connect(gain);
+    gain.gain.value = 0.3;
+    osc.start();
+    gain.gain.exponentialRampToValueAtTime(0.00001, ctx.currentTime + 0.8);
+    osc.stop(ctx.currentTime + 0.8);
+    // 如果 AudioContext 是 suspended 状态，需要 resume
+    if (ctx.state === 'suspended') {
+      ctx.resume();
+    }
+  } catch (e) {
+    console.warn('播放提醒音失败', e);
+  }
+};
 
 // 请求通知权限（带用户提示）
 LC.requestNotificationPermission = function () {
@@ -359,7 +387,7 @@ LC.requestNotificationPermission = function () {
   }
 };
 
-// 显示系统通知
+// 显示系统通知（同时播放提醒音）
 LC.showNotification = function (event, dateStr, remindBefore) {
   if (!LC.notificationPermissionGranted) {
     console.warn('无法显示通知：权限未授予');
@@ -375,6 +403,8 @@ LC.showNotification = function (event, dateStr, remindBefore) {
   var tag = event.id + '_' + dateStr;
   var notification = new Notification(title, { body: body, tag: tag });
   console.log('已发送通知：', title, body);
+  // 播放提醒音
+  LC.playRemindSound();
 };
 
 // 标记已提醒
@@ -424,7 +454,7 @@ LC.makeLocalDate = function (dateStr, timeStr) {
   return new Date(year, month, day, hour, minute);
 };
 
-// 核心检查函数（带详细日志）
+// 核心检查函数（带详细日志，支持准时提醒）
 LC.checkReminders = function () {
   console.log('=== 开始检查提醒 ===');
   if (!LC.ud) {
@@ -451,7 +481,8 @@ LC.checkReminders = function () {
   for (var i = 0; i < events.length; i++) {
     var ev = events[i];
     var remindBeforeMinutes = LC.getRemindMinutes(ev.remindBefore);
-    if (remindBeforeMinutes === 0) continue;
+    // 允许“准时”（0分钟）提醒，不跳过
+    if (remindBeforeMinutes === 0 && ev.remindBefore !== 'on_time') continue;
 
     var startDate = new Date(now);
     startDate.setHours(0, 0, 0, 0);
@@ -470,8 +501,16 @@ LC.checkReminders = function () {
           startDateTime = LC.makeLocalDate(dateStr, startTime);
         }
         var remindTime = new Date(startDateTime.getTime() - remindBeforeMinutes * 60 * 1000);
-
-        if (nowTimestamp >= remindTime.getTime() && nowTimestamp < startDateTime.getTime()) {
+        
+        var isTrigger = false;
+        if (remindBeforeMinutes === 0 && ev.remindBefore === 'on_time') {
+          // 准时：提醒时间窗口为 [开始时间, 开始时间+1分钟)
+          isTrigger = (nowTimestamp >= startDateTime.getTime() && nowTimestamp < startDateTime.getTime() + 60000);
+        } else {
+          isTrigger = (nowTimestamp >= remindTime.getTime() && nowTimestamp < startDateTime.getTime());
+        }
+        
+        if (isTrigger) {
           console.log('命中提醒条件：', ev.title, dateStr, '提醒时间:', remindTime.toString(), '开始时间:', startDateTime.toString());
           if (!LC.isReminded(ev.id, dateStr)) {
             LC.showNotification(ev, dateStr, remindBeforeMinutes);
@@ -507,6 +546,7 @@ window.testReminder = function () {
   LC.requestNotificationPermission();
   if (Notification.permission === 'granted') {
     new Notification('测试通知', { body: '如果您看到此消息，说明通知权限正常' });
+    LC.playRemindSound(); // 同时测试声音
   }
   LC.checkReminders();
 };
