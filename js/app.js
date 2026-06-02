@@ -426,6 +426,8 @@ LC.enterCalendar=function(){
   if (!LC.remindIntervals) {
     LC.startReminderTimer();
   }
+  // 建立事件日期索引（性能优化）
+  LC.buildEventIndex();
 };
 
 /* ========= 初始化 ========= */
