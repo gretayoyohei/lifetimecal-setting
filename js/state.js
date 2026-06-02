@@ -81,6 +81,10 @@ LC.sidebarStartW = 0;
 LC.TODAY = '';
 LC.originalLifeExp = null;
 
+/* ========= 事件日期索引（性能优化） ========= */
+LC.eventDateIndex = null;
+LC.indexDirty = true;
+
 /* ========= 待办完成状态存储 ========= */
 LC.getTodoKey = function (eventId, dateStr) {
   return eventId + '_' + dateStr;
@@ -104,7 +108,6 @@ LC.setTodoCompleted = function (eventId, dateStr, completed) {
   LC.save();
 };
 
-/* ========= 删除事件时清理所有关联的待办状态 ========= */
 LC.clearTodoCompletedByEventId = function (eventId) {
   if (!LC.ud || !LC.ud.todoCompleted) return;
   for (var key in LC.ud.todoCompleted) {
@@ -115,7 +118,7 @@ LC.clearTodoCompletedByEventId = function (eventId) {
   LC.save();
 };
 
-/* ========= 导出文件名生成（用户名 + 固定前缀 + 时间戳） ========= */
+/* ========= 导出文件名生成 ========= */
 LC.getExportFileName = function () {
   var userName = LC.ud && LC.ud.name ? LC.ud.name.trim() : 'unknown';
   userName = userName.replace(/[\\/:*?"<>|]/g, '_');
@@ -210,7 +213,16 @@ LC.monthInfo = function (y, m) {
   };
 };
 
-/* ========= 检查日程是否在指定日期显示 ========= */
+/* ========= ID 生成 ========= */
+LC.seededRand = function (s) {
+  var x = Math.sin(s * 9301 + 49297) * 233280;
+  return x - Math.floor(x);
+};
+LC.genId = function () {
+  return Date.now().toString(36) + Math.random().toString(36).substr(2, 5);
+};
+
+/* ========= 检查日程是否在指定日期显示（保留原逻辑，供提醒等使用） ========= */
 LC.shouldShowEventOnDate = function (ev, ds) {
   if (ev.exceptions && ev.exceptions.indexOf(ds) !== -1) return false;
   var sD = ev.startDate || ev.date;
@@ -247,20 +259,152 @@ LC.shouldShowEventOnDate = function (ev, ds) {
   }
 };
 
-LC.getEv = function (ds) {
-  if (!LC.ud || !LC.ud.events) return [];
-  return LC.ud.events.filter(function (e) {
-    return LC.shouldShowEventOnDate(e, ds);
-  });
-};
-LC.seededRand = function (s) {
-  var x = Math.sin(s * 9301 + 49297) * 233280;
-  return x - Math.floor(x);
-};
-LC.genId = function () {
-  return Date.now().toString(36) + Math.random().toString(36).substr(2, 5);
+/* ========= 高性能索引：获取事件的所有出现日期（已修复重复日程展开） ========= */
+LC.expandEventDates = function(ev, rangeStart, rangeEnd) {
+  var results = [];
+  var startDateRaw = ev.startDate;
+  var endDateRaw = ev.endDate || ev.startDate;
+  var repeat = ev.repeat || 'none';
+  var exceptions = ev.exceptions || [];
+
+  var toNum = function(ds) { return parseInt(ds.replace(/-/g, ''), 10); };
+  var rangeStartNum = toNum(rangeStart);
+  var rangeEndNum = toNum(rangeEnd);
+  var startNum = toNum(startDateRaw);
+  var endNum = toNum(endDateRaw);
+
+  if (endNum < rangeStartNum || startNum > rangeEndNum) return [];
+
+  if (repeat === 'none') {
+    if (startNum >= rangeStartNum && startNum <= rangeEndNum && exceptions.indexOf(startDateRaw) === -1) {
+      results.push(startDateRaw);
+    }
+    return results;
+  }
+
+  // 对于重复事件，如果用户没有设置结束日期，则默认一直重复到寿命结束
+  var effectiveEndRaw = endDateRaw;
+  if (effectiveEndRaw === startDateRaw && repeat !== 'none') {
+    effectiveEndRaw = rangeEnd;
+  }
+  var effectiveEndNum = toNum(effectiveEndRaw);
+  if (effectiveEndNum < rangeStartNum) return [];
+
+  var MAX_ITER = 50000;
+  var iter = 0;
+  var current = new Date(startDateRaw + 'T00:00:00');
+  var rangeStartDate = new Date(rangeStart + 'T00:00:00');
+  var rangeEndDate = new Date(rangeEnd + 'T00:00:00');
+  var effectiveEndDate = new Date(effectiveEndRaw + 'T00:00:00');
+  
+  if (current < rangeStartDate) current = new Date(rangeStartDate);
+  var maxEnd = effectiveEndDate < rangeEndDate ? effectiveEndDate : rangeEndDate;
+
+  if (repeat === 'daily') {
+    while (current <= maxEnd && iter++ < MAX_ITER) {
+      var ds = LC.fmtDate(current.getFullYear(), current.getMonth(), current.getDate());
+      if (exceptions.indexOf(ds) === -1 && ds >= startDateRaw && ds <= effectiveEndRaw) {
+        results.push(ds);
+      }
+      current.setDate(current.getDate() + 1);
+    }
+  } 
+  else if (repeat === 'weekly') {
+    while (current <= maxEnd && iter++ < MAX_ITER) {
+      var ds = LC.fmtDate(current.getFullYear(), current.getMonth(), current.getDate());
+      if (exceptions.indexOf(ds) === -1 && ds >= startDateRaw && ds <= effectiveEndRaw) {
+        results.push(ds);
+      }
+      current.setDate(current.getDate() + 7);
+    }
+  }
+  else if (repeat === 'monthly') {
+    var origDay = new Date(startDateRaw + 'T00:00:00').getDate();
+    var curYear = current.getFullYear();
+    var curMonth = current.getMonth();
+    while (iter++ < MAX_ITER) {
+      var daysInMonth = new Date(curYear, curMonth + 1, 0).getDate();
+      var day = Math.min(origDay, daysInMonth);
+      var ds = LC.fmtDate(curYear, curMonth, day);
+      var dsDate = new Date(ds + 'T00:00:00');
+      if (dsDate > maxEnd) break;
+      if (exceptions.indexOf(ds) === -1 && ds >= startDateRaw && ds <= effectiveEndRaw) {
+        results.push(ds);
+      }
+      curMonth++;
+      if (curMonth > 11) {
+        curMonth = 0;
+        curYear++;
+      }
+    }
+  }
+  else if (repeat === 'yearly') {
+    var origMonth = new Date(startDateRaw + 'T00:00:00').getMonth();
+    var origDay = new Date(startDateRaw + 'T00:00:00').getDate();
+    var curYear = current.getFullYear();
+    while (iter++ < MAX_ITER) {
+      var daysInMonth = new Date(curYear, origMonth + 1, 0).getDate();
+      var day = Math.min(origDay, daysInMonth);
+      var ds = LC.fmtDate(curYear, origMonth, day);
+      var dsDate = new Date(ds + 'T00:00:00');
+      if (dsDate > maxEnd) break;
+      if (exceptions.indexOf(ds) === -1 && ds >= startDateRaw && ds <= effectiveEndRaw) {
+        results.push(ds);
+      }
+      curYear++;
+    }
+  }
+
+  return results;
 };
 
+/* ========= 构建完整的事件日期索引 ========= */
+LC.buildEventIndex = function() {
+  if (!LC.ud || !LC.ud.events) {
+    LC.eventDateIndex = new Map();
+    LC.indexDirty = false;
+    return;
+  }
+
+  var index = new Map();
+  var startYear = LC.birthYr;
+  var endYear = LC.birthYr + LC.totalYrs - 1;
+  var rangeStart = startYear + '-01-01';
+  var rangeEnd = endYear + '-12-31';
+
+  for (var i = 0; i < LC.ud.events.length; i++) {
+    var ev = LC.ud.events[i];
+    var dates = LC.expandEventDates(ev, rangeStart, rangeEnd);
+    for (var j = 0; j < dates.length; j++) {
+      var d = dates[j];
+      if (!index.has(d)) index.set(d, []);
+      index.get(d).push(ev);
+    }
+  }
+
+  LC.eventDateIndex = index;
+  LC.indexDirty = false;
+};
+
+/* ========= 获取某日期的所有事件（渲染用） ========= */
+LC.getEventsByDate = function(ds) {
+  if (LC.indexDirty) {
+    LC.buildEventIndex();
+  }
+  return LC.eventDateIndex ? (LC.eventDateIndex.get(ds) || []) : [];
+};
+
+/* ========= 保留原 getEv 接口，改为调用索引 ========= */
+LC.getEv = function(ds) {
+  return LC.getEventsByDate(ds);
+};
+
+/* ========= 标记索引为脏 ========= */
+LC.markIndexDirty = function() {
+  LC.indexDirty = true;
+};
+
+/* ========= 存储与加载 ========= */
 LC.load = function () {
   try {
     var r = localStorage.getItem(LC.STORE);
@@ -271,11 +415,15 @@ LC.load = function () {
   } catch (e) {}
   return false;
 };
+
 LC.save = function () {
-  if (LC.ud) localStorage.setItem(LC.STORE, JSON.stringify(LC.ud));
+  if (LC.ud) {
+    localStorage.setItem(LC.STORE, JSON.stringify(LC.ud));
+    LC.markIndexDirty();
+  }
 };
 
-/* ========= 画布尺寸（兼容 Retina 屏幕，防止模糊） ========= */
+/* ========= 画布尺寸 ========= */
 LC.resize = function () {
   LC.dpr = window.devicePixelRatio || 1;
   LC.W = window.innerWidth;
@@ -323,126 +471,73 @@ LC.drawStaticBg = function () {
   }
 };
 
-/* ========= 背景动画（兼容旧调用，现改为仅绘制一次） ========= */
+/* ========= 背景动画 ========= */
 LC.animBg = function () {
   LC.drawStaticBg();
 };
 
-/* ========= 提醒功能（增强版 + 提醒音） ========= */
+/* ========= 提醒功能 ========= */
 LC.remindIntervals = null;
 LC.notificationPermissionGranted = false;
 
-// 播放提醒音（使用 Web Audio 生成短促蜂鸣声）
 LC.playRemindSound = function () {
   try {
-    // 使用 AudioContext 生成一个短促的“叮”声
     var AudioCtx = window.AudioContext || window.webkitAudioContext;
-    if (!AudioCtx) {
-      console.warn('当前浏览器不支持 Web Audio，无法播放提醒音');
-      return;
-    }
+    if (!AudioCtx) return;
     var ctx = new AudioCtx();
     var gain = ctx.createGain();
     gain.connect(ctx.destination);
     var osc = ctx.createOscillator();
     osc.type = 'sine';
-    osc.frequency.value = 880; // 880 Hz (A5)
+    osc.frequency.value = 880;
     osc.connect(gain);
     gain.gain.value = 0.3;
     osc.start();
     gain.gain.exponentialRampToValueAtTime(0.00001, ctx.currentTime + 0.8);
     osc.stop(ctx.currentTime + 0.8);
-    // 如果 AudioContext 是 suspended 状态，需要 resume
-    if (ctx.state === 'suspended') {
-      ctx.resume();
-    }
-  } catch (e) {
-    console.warn('播放提醒音失败', e);
-  }
+    if (ctx.state === 'suspended') ctx.resume();
+  } catch (e) {}
 };
 
-// 请求通知权限（带用户提示）
 LC.requestNotificationPermission = function () {
-  if (!('Notification' in window)) {
-    console.warn('浏览器不支持通知');
-    return false;
-  }
+  if (!('Notification' in window)) return false;
   if (Notification.permission === 'granted') {
     LC.notificationPermissionGranted = true;
-    console.log('通知权限已授予');
     return true;
   } else if (Notification.permission !== 'denied') {
     Notification.requestPermission().then(function (permission) {
-      if (permission === 'granted') {
-        LC.notificationPermissionGranted = true;
-        console.log('用户允许通知');
-      } else {
-        console.warn('用户拒绝通知');
-      }
+      if (permission === 'granted') LC.notificationPermissionGranted = true;
     });
-    return false;
-  } else {
-    console.warn('通知权限已被拒绝，请在浏览器设置中开启');
-    return false;
   }
+  return false;
 };
 
-// 显示系统通知（同时播放提醒音）
 LC.showNotification = function (event, dateStr, remindBefore) {
-  if (!LC.notificationPermissionGranted) {
-    console.warn('无法显示通知：权限未授予');
-    return;
-  }
+  if (!LC.notificationPermissionGranted) return;
   var title = event.title;
-  var body = '';
-  if (event.isAllDay) {
-    body = LC.tf('remind_body_all_day', { title: event.title, date: dateStr });
-  } else {
-    body = LC.tf('remind_body', { title: event.title, time: event.startTime, date: dateStr });
-  }
-  var tag = event.id + '_' + dateStr;
-  var notification = new Notification(title, { body: body, tag: tag });
-  console.log('已发送通知：', title, body);
-  // 播放提醒音
+  var body = event.isAllDay ? LC.tf('remind_body_all_day', { title: event.title, date: dateStr }) : LC.tf('remind_body', { title: event.title, time: event.startTime, date: dateStr });
+  new Notification(title, { body: body, tag: event.id + '_' + dateStr });
   LC.playRemindSound();
 };
 
-// 标记已提醒
 LC.markReminded = function (eventId, dateStr) {
   if (!LC.ud) return;
   if (!LC.ud.remindedEvents) LC.ud.remindedEvents = {};
   var key = eventId + '_' + dateStr;
   LC.ud.remindedEvents[key] = true;
   LC.save();
-  console.log('已标记提醒：', key);
 };
 
-// 检查是否已提醒
 LC.isReminded = function (eventId, dateStr) {
   if (!LC.ud || !LC.ud.remindedEvents) return false;
-  var key = eventId + '_' + dateStr;
-  return LC.ud.remindedEvents[key] === true;
+  return LC.ud.remindedEvents[eventId + '_' + dateStr] === true;
 };
 
-// 获取提醒提前分钟数
 LC.getRemindMinutes = function (remindValue) {
-  var map = {
-    none: 0,
-    on_time: 0,
-    '5m': 5,
-    '15m': 15,
-    '30m': 30,
-    '1h': 60,
-    '2h': 120,
-    '1d': 1440,
-    '2d': 2880,
-    '3d': 4320,
-    '1w': 10080,
-  };
+  var map = { none: 0, on_time: 0, '5m': 5, '15m': 15, '30m': 30, '1h': 60, '2h': 120, '1d': 1440, '2d': 2880, '3d': 4320, '1w': 10080 };
   return map[remindValue] || 0;
 };
 
-// 安全构造本地时间对象（避免时区解析问题）
 LC.makeLocalDate = function (dateStr, timeStr) {
   var parts = dateStr.split('-');
   var year = parseInt(parts[0]);
@@ -454,100 +549,53 @@ LC.makeLocalDate = function (dateStr, timeStr) {
   return new Date(year, month, day, hour, minute);
 };
 
-// 核心检查函数（带详细日志，支持准时提醒）
 LC.checkReminders = function () {
-  console.log('=== 开始检查提醒 ===');
-  if (!LC.ud) {
-    console.log('无用户数据');
-    return;
-  }
-  if (!LC.ud.events) {
-    console.log('无事件数据');
-    return;
-  }
-  if (!LC.notificationPermissionGranted) {
-    console.log('通知权限未授予，跳过提醒检查');
-    return;
-  }
-
+  if (!LC.ud || !LC.ud.events || !LC.notificationPermissionGranted) return;
   var now = new Date();
   var nowTimestamp = now.getTime();
-  console.log('当前时间:', now.toString());
-  var maxRemindMinutes = 10080; // 1周
+  var maxRemindMinutes = 10080;
   var checkEnd = new Date(now.getTime() + maxRemindMinutes * 60 * 1000 + 24 * 60 * 60 * 1000);
   var events = LC.ud.events;
-  var remindedCount = 0;
-
   for (var i = 0; i < events.length; i++) {
     var ev = events[i];
     var remindBeforeMinutes = LC.getRemindMinutes(ev.remindBefore);
-    // 允许“准时”（0分钟）提醒，不跳过
     if (remindBeforeMinutes === 0 && ev.remindBefore !== 'on_time') continue;
-
     var startDate = new Date(now);
     startDate.setHours(0, 0, 0, 0);
     var endDate = new Date(checkEnd);
     endDate.setHours(23, 59, 59, 999);
     var currentDate = new Date(startDate);
-
     while (currentDate <= endDate) {
       var dateStr = LC.fmtDate(currentDate.getFullYear(), currentDate.getMonth(), currentDate.getDate());
       if (LC.shouldShowEventOnDate(ev, dateStr)) {
         var startDateTime;
-        if (ev.isAllDay) {
-          startDateTime = LC.makeLocalDate(dateStr, '00:00');
-        } else {
-          var startTime = ev.startTime || '09:00';
-          startDateTime = LC.makeLocalDate(dateStr, startTime);
-        }
+        if (ev.isAllDay) startDateTime = LC.makeLocalDate(dateStr, '00:00');
+        else startDateTime = LC.makeLocalDate(dateStr, ev.startTime || '09:00');
         var remindTime = new Date(startDateTime.getTime() - remindBeforeMinutes * 60 * 1000);
-        
         var isTrigger = false;
-        if (remindBeforeMinutes === 0 && ev.remindBefore === 'on_time') {
-          // 准时：提醒时间窗口为 [开始时间, 开始时间+1分钟)
-          isTrigger = (nowTimestamp >= startDateTime.getTime() && nowTimestamp < startDateTime.getTime() + 60000);
-        } else {
-          isTrigger = (nowTimestamp >= remindTime.getTime() && nowTimestamp < startDateTime.getTime());
-        }
-        
-        if (isTrigger) {
-          console.log('命中提醒条件：', ev.title, dateStr, '提醒时间:', remindTime.toString(), '开始时间:', startDateTime.toString());
-          if (!LC.isReminded(ev.id, dateStr)) {
-            LC.showNotification(ev, dateStr, remindBeforeMinutes);
-            LC.markReminded(ev.id, dateStr);
-            remindedCount++;
-          } else {
-            console.log('已提醒过，跳过');
-          }
+        if (remindBeforeMinutes === 0 && ev.remindBefore === 'on_time') isTrigger = (nowTimestamp >= startDateTime.getTime() && nowTimestamp < startDateTime.getTime() + 60000);
+        else isTrigger = (nowTimestamp >= remindTime.getTime() && nowTimestamp < startDateTime.getTime());
+        if (isTrigger && !LC.isReminded(ev.id, dateStr)) {
+          LC.showNotification(ev, dateStr, remindBeforeMinutes);
+          LC.markReminded(ev.id, dateStr);
         }
       }
       currentDate.setDate(currentDate.getDate() + 1);
     }
   }
-  console.log('本次检查发送提醒数:', remindedCount);
 };
 
-// 启动定时器（30秒检查一次，更快响应）
 LC.startReminderTimer = function () {
-  if (LC.remindIntervals) {
-    clearInterval(LC.remindIntervals);
-    console.log('清除旧的提醒定时器');
-  }
-  LC.remindIntervals = setInterval(function () {
-    LC.checkReminders();
-  }, 30000); // 30秒
-  console.log('提醒定时器已启动（每30秒）');
-  LC.checkReminders(); // 立即执行一次
+  if (LC.remindIntervals) clearInterval(LC.remindIntervals);
+  LC.remindIntervals = setInterval(function () { LC.checkReminders(); }, 30000);
+  LC.checkReminders();
 };
 
-// 提供一个手动测试函数（可在控制台调用）
 window.testReminder = function () {
   console.log('手动测试提醒功能');
   LC.requestNotificationPermission();
-  if (Notification.permission === 'granted') {
-    new Notification('测试通知', { body: '如果您看到此消息，说明通知权限正常' });
-    LC.playRemindSound(); // 同时测试声音
-  }
+  if (Notification.permission === 'granted') new Notification('测试通知', { body: '通知权限正常' });
+  LC.playRemindSound();
   LC.checkReminders();
 };
 
